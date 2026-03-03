@@ -1,0 +1,1 @@
+"""MCP Server application package."""

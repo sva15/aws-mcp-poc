@@ -9,7 +9,7 @@ Step-by-step instructions to deploy everything using the AWS Console.
 ```
 Step 1: Enable Bedrock Model Access
 Step 2: Create IAM Roles
-Step 3: Deploy Tool Lambda Functions (x3)
+Step 3: Deploy Tool Lambda Functions (x4)
 Step 4: Test Tool Lambdas
 Step 5: Deploy MCP Server Lambda
 Step 6: Test MCP Server
@@ -153,6 +153,25 @@ Step 8: Test End-to-End
 3. Use code from: `tool-lambdas/datetime_tools/lambda_function.py`
 4. Click **Deploy**
 
+### 3D: Utility Tools Lambda (5 tools in ONE Lambda!)
+
+This Lambda demonstrates **multiple diverse tools in a single Lambda function**.
+
+1. **Function name**: `mcp-tool-utility`
+2. Same settings as above (Python 3.12, `mcp-tool-lambda-role`)
+3. Use code from: `tool-lambdas/utility_tools/lambda_function.py`
+4. Click **Deploy**
+
+**Tools provided by this single Lambda:**
+
+| # | Tool | What It Does |
+|---|------|--------------|
+| 1 | `convert_temperature` | Convert between Celsius and Fahrenheit |
+| 2 | `calculate_percentage` | What percent / percent of calculations |
+| 3 | `generate_password` | Generate random secure passwords |
+| 4 | `count_characters` | Count characters, letters, digits in text |
+| 5 | `is_palindrome` | Check if a word/phrase is a palindrome |
+
 ---
 
 ## Step 4: Test Tool Lambdas
@@ -203,8 +222,34 @@ Go to **Lambda Console** → `mcp-tool-math` → **Test** tab
 ```
 ✅ Should return current UTC date/time
 
+### Test mcp-tool-utility (5 tools in one Lambda!)
+
+**Test 1 — Describe:**
+```json
+{"action": "__describe__"}
+```
+✅ Should return **5 tools**: convert_temperature, calculate_percentage, generate_password, count_characters, is_palindrome
+
+**Test 2 — Convert Temperature:**
+```json
+{"action": "__call__", "tool": "convert_temperature", "arguments": {"value": 100, "from_unit": "celsius"}}
+```
+✅ Should return `212°F`
+
+**Test 3 — Calculate Percentage:**
+```json
+{"action": "__call__", "tool": "calculate_percentage", "arguments": {"operation": "percent_of", "a": 20, "b": 150}}
+```
+✅ Should return `30`
+
+**Test 4 — Is Palindrome:**
+```json
+{"action": "__call__", "tool": "is_palindrome", "arguments": {"text": "racecar"}}
+```
+✅ Should return `{"is_palindrome": true}`
+
 > [!IMPORTANT]
-> Do NOT proceed until all 3 tool Lambdas pass their tests!
+> Do NOT proceed until all **4** tool Lambdas pass their tests!
 
 ---
 
@@ -266,13 +311,18 @@ Go to **Lambda Console** → `mcp-tool-math` → **Test** tab
             {"name": "reverse", "description": "Reverse a string..."},
             {"name": "word_count", "description": "Count words..."},
             {"name": "current_time", "description": "Get current time..."},
-            {"name": "date_diff", "description": "Calculate days between..."}
+            {"name": "date_diff", "description": "Calculate days between..."},
+            {"name": "convert_temperature", "description": "Convert temperature..."},
+            {"name": "calculate_percentage", "description": "Calculate percentages..."},
+            {"name": "generate_password", "description": "Generate password..."},
+            {"name": "count_characters", "description": "Count characters..."},
+            {"name": "is_palindrome", "description": "Check palindrome..."}
         ]
     }
 }
 ```
 
-✅ All 9 tools should appear (discovered from all 3 tool Lambdas)
+✅ All **14 tools** should appear (discovered from all 4 tool Lambdas)
 
 ### Test 2 — Call a Tool
 
@@ -329,7 +379,7 @@ Go to **Lambda Console** → `mcp-tool-math` → **Test** tab
 ```json
 {"action": "list_tools"}
 ```
-✅ Should list all 9 tools
+✅ Should list all **14 tools** from 4 tool Lambdas
 
 ### Test 2: Ask a Math Question
 
@@ -358,6 +408,34 @@ Go to **Lambda Console** → `mcp-tool-math` → **Test** tab
 {"question": "Add 100 and 200, then tell me how to spell the result backwards"}
 ```
 ✅ Should use `add` then `reverse` and give the answer
+
+### Test 6: Temperature Conversion (from Utility Lambda)
+
+```json
+{"question": "Convert 100 degrees Celsius to Fahrenheit"}
+```
+✅ Should use `convert_temperature` and return 212°F
+
+### Test 7: Percentage (from Utility Lambda)
+
+```json
+{"question": "What is 20 percent of 150?"}
+```
+✅ Should use `calculate_percentage` and return 30
+
+### Test 8: Password (from Utility Lambda)
+
+```json
+{"question": "Generate a 16 character password for me"}
+```
+✅ Should use `generate_password` and return a random password
+
+### Test 9: Palindrome Check (from Utility Lambda)
+
+```json
+{"question": "Is the word racecar a palindrome?"}
+```
+✅ Should use `is_palindrome` and confirm yes
 
 ---
 
@@ -418,7 +496,7 @@ Go to `mcp-client` → Test:
 ```json
 {"action": "list_tools"}
 ```
-✅ Should now show **10 tools** (9 original + greet)
+✅ Should now show **15 tools** (14 original + greet)
 
 ### Step 4: Ask a question
 
@@ -434,7 +512,7 @@ Go to `mcp-client` → Test:
 ## Resource Cleanup
 
 When done testing, delete in this order:
-1. Lambda functions: `mcp-client`, `mcp-server`, `mcp-tool-math`, `mcp-tool-string`, `mcp-tool-time`, `mcp-tool-greeting`
+1. Lambda functions: `mcp-client`, `mcp-server`, `mcp-tool-math`, `mcp-tool-string`, `mcp-tool-time`, `mcp-tool-utility`, `mcp-tool-greeting`
 2. IAM roles: `mcp-client-lambda-role`, `mcp-server-lambda-role`, `mcp-tool-lambda-role`
 3. IAM policies: `mcp-server-policy`, `mcp-client-policy`
 4. CloudWatch log groups: `/aws/lambda/mcp-*`
