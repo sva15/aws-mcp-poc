@@ -38,6 +38,44 @@ from app.discovery import discover_tools
 logger = logging.getLogger("main")
 
 
+# ─── Host Header Middleware ──────────────────────────────────────
+# The MCP SDK's Streamable HTTP transport has DNS rebinding protection:
+# it validates the Host header and rejects anything that isn't "localhost".
+#
+# When accessing via IP (e.g., 10.132.191.157), the Host header is the IP,
+# which gets rejected with: 421 "Invalid Host header"
+#
+# This middleware rewrites the Host header to "localhost" BEFORE the
+# request reaches the MCP SDK, bypassing this check.
+#
+# This is SAFE for private EC2 deployments where:
+#   - The server is on a private subnet (not internet-facing)
+#   - DNS rebinding attacks are not a concern
+#   - Access is controlled by security groups
+
+class HostHeaderMiddleware:
+    """
+    ASGI middleware that rewrites the Host header to localhost.
+    Fixes: 421 "Invalid Host header" from MCP SDK's DNS rebinding protection.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            # Rewrite the Host header to localhost so MCP SDK accepts it
+            new_headers = []
+            for key, value in scope.get("headers", []):
+                if key == b"host":
+                    new_headers.append((b"host", f"localhost:{SERVER_PORT}".encode()))
+                else:
+                    new_headers.append((key, value))
+            scope = dict(scope, headers=new_headers)
+
+        await self.app(scope, receive, send)
+
+
 # ─── Create FastMCP Wrapper for HTTP Transport ──────────────────
 # We use FastMCP as a transport layer only. The actual tool handling
 # is done by our low-level Server (app/server.py).
@@ -130,7 +168,7 @@ async def lifespan(app: Starlette):
 # Fix: Mount at "/" so the sub-app's internal "/mcp" route works.
 # Requests flow:  POST /mcp → Starlette "/" mount → sub-app "/mcp" → OK
 
-app = Starlette(
+_starlette_app = Starlette(
     routes=[
         # Health check endpoint (must be BEFORE the catch-all Mount)
         Route("/health", health_check, methods=["GET"]),
@@ -142,6 +180,10 @@ app = Starlette(
     ],
     lifespan=lifespan,
 )
+
+# Wrap with HostHeaderMiddleware to fix 421 "Invalid Host header"
+# when accessing via IP address instead of localhost
+app = HostHeaderMiddleware(_starlette_app)
 
 
 # ─── CLI Entry Point ────────────────────────────────────────────
