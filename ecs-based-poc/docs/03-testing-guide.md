@@ -63,14 +63,14 @@ Test via `curl` against the ALB URL.
 ### Test 17 — Health Check
 
 ```bash
-curl http://<ALB-DNS>/health
+curl http://10.132.191.157:8085/health
 ```
 ✅ Returns `{"status":"healthy", "tools_discovered":14, ...}`
 
 ### Test 18 — Tool Discovery (tools/list)
 
 ```bash
-curl -X POST http://<ALB-DNS>/mcp \
+curl -X POST http://10.132.191.157:8085/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
@@ -79,7 +79,7 @@ curl -X POST http://<ALB-DNS>/mcp \
 ### Test 19 — Execute Tool (tools/call)
 
 ```bash
-curl -X POST http://<ALB-DNS>/mcp \
+curl -X POST http://10.132.191.157:8085/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add","arguments":{"a":5,"b":3}}}'
 ```
@@ -88,7 +88,7 @@ curl -X POST http://<ALB-DNS>/mcp \
 ### Test 20 — Unknown Tool
 
 ```bash
-curl -X POST http://<ALB-DNS>/mcp \
+curl -X POST http://10.132.191.157:8085/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"nonexistent","arguments":{}}}'
 ```
@@ -97,7 +97,7 @@ curl -X POST http://<ALB-DNS>/mcp \
 ### Test 21 — Unknown Method
 
 ```bash
-curl -X POST http://<ALB-DNS>/mcp \
+curl -X POST http://10.132.191.157:8085/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"invalid/method"}'
 ```
@@ -188,7 +188,7 @@ Create `mcp-tool-greeting` Lambda (see 02-deployment-guide.md for the code).
 
 Wait 5 minutes (cache TTL) or test via MCP Server:
 ```bash
-curl -X POST http://<ALB-DNS>/mcp \
+curl -X POST http://10.132.191.157:8085/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"force_refresh":true}}'
 ```

@@ -44,7 +44,7 @@ logger.setLevel(logging.INFO)
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 # URL of the MCP Server running on ECS behind an ALB
-MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://mcp-server-alb.example.com/mcp")
+MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://10.132.191.157:8085/mcp")
 
 # Bedrock model to use for AI reasoning
 BEDROCK_MODEL_ID = os.environ.get(

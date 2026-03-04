@@ -1,4 +1,6 @@
-# ECS Deployment Guide — Step by Step via AWS Console
+# Deployment Guide — Private EC2 + Docker
+
+The MCP Server runs as a Docker container on your **private EC2 instance** (`10.132.191.157:8085`).
 
 ---
 
@@ -6,27 +8,23 @@
 
 ```
 Step 1: Enable Bedrock Model Access
-Step 2: Create IAM Roles (x3)
+Step 2: Create IAM Roles
 Step 3: Deploy Tool Lambda Functions (x4)
 Step 4: Test Tool Lambdas
-Step 5: Push MCP Server Image to ECR
-Step 6: Create ECS Cluster, Task Definition, Service with ALB
+Step 5: Set Up EC2 Instance (Docker + IAM)
+Step 6: Build & Run MCP Server Container on EC2
 Step 7: Verify MCP Server Health
 Step 8: Deploy Client Lambda
 Step 9: Test End-to-End
 ```
 
-**Estimated time: 45-60 minutes**
-
 ---
 
 ## Step 1: Enable Bedrock Model Access
 
-1. Go to **Amazon Bedrock Console** → [console.aws.amazon.com/bedrock](https://console.aws.amazon.com/bedrock)
-2. Select your region (e.g., `us-east-1`)
-3. **Model access** → **Manage model access**
-4. Check **Anthropic → Claude 3 Sonnet** (or **Amazon → Nova Lite** for cheaper)
-5. **Request model access** → wait for **Access granted**
+1. **Amazon Bedrock Console** → **Model access** → **Manage model access**
+2. Check **Anthropic → Claude 3 Sonnet** (or **Amazon → Nova Lite** for cheaper)
+3. **Request model access** → wait for **Access granted**
 
 ---
 
@@ -34,15 +32,15 @@ Step 9: Test End-to-End
 
 ### 2A: Tool Lambda Role
 
-1. **IAM** → **Roles** → **Create Role** → Lambda → `AWSLambdaBasicExecutionRole`
-2. **Name**: `mcp-tool-lambda-role`
+**IAM** → **Roles** → **Create Role** → Lambda → `AWSLambdaBasicExecutionRole`
+**Name**: `mcp-tool-lambda-role`
 
-### 2B: MCP Server ECS Task Role
+### 2B: EC2 Instance Role (for MCP Server)
 
-1. **IAM** → **Roles** → **Create Role**
-2. **Trusted entity**: AWS Service → **Elastic Container Service** → **Elastic Container Service Task**
-3. **Attach policy**: `AWSLambdaBasicExecutionRole` (for CloudWatch logs)
-4. **Create inline policy** → JSON:
+The EC2 instance needs permission to list and invoke Lambda functions.
+
+1. **IAM** → **Roles** → **Create Role** → **EC2**
+2. **Create inline policy** → JSON:
 
 ```json
 {
@@ -64,19 +62,13 @@ Step 9: Test End-to-End
 }
 ```
 
-5. **Policy name**: `mcp-server-tool-access`
-6. **Role name**: `mcp-server-ecs-task-role`
+3. **Policy name**: `mcp-server-tool-access`
+4. **Role name**: `mcp-server-ec2-role`
+5. **Attach this role** to your EC2 instance:
+   - EC2 Console → Select instance → Actions → Security → **Modify IAM role**
+   - Select `mcp-server-ec2-role` → **Update IAM role**
 
-### 2C: ECS Task Execution Role
-
-> This role lets ECS pull images from ECR and write logs.
-
-1. **IAM** → **Roles** → **Create Role**
-2. **Trusted entity**: AWS Service → **Elastic Container Service** → **Elastic Container Service Task**
-3. **Attach policy**: `AmazonECSTaskExecutionRolePolicy`
-4. **Role name**: `ecsTaskExecutionRole` (may already exist)
-
-### 2D: Client Lambda Role
+### 2C: Client Lambda Role
 
 1. **IAM** → **Roles** → **Create Role** → Lambda → `AWSLambdaBasicExecutionRole`
 2. **Create inline policy** → JSON:
@@ -98,28 +90,19 @@ Step 9: Test End-to-End
 }
 ```
 
-> **Note**: The client Lambda calls the MCP Server via HTTP (ALB URL), NOT via Lambda invoke. So no `lambda:InvokeFunction` permission needed.
+3. **Role name**: `mcp-client-lambda-role`
 
-3. **Policy name**: `mcp-client-bedrock-access`
-4. **Role name**: `mcp-client-lambda-role`
+> The client Lambda calls MCP Server via HTTP (`10.132.191.157:8085`) — no `lambda:InvokeFunction` needed.
 
-### Also: Create a VPC Security Group for ALB + ECS
+### Security Group
 
-1. **VPC** → **Security Groups** → **Create**
-2. **Name**: `mcp-server-sg`
-3. **Inbound rules**:
-   - Port 80 (HTTP) from `0.0.0.0/0` (ALB)
-   - Port 8000 from the security group itself (ECS ↔ ALB)
-4. **Outbound**: All traffic
+Ensure the EC2 security group allows **inbound port 8085** from the Lambda's VPC/CIDR.
 
 ---
 
 ## Step 3: Deploy Tool Lambda Functions
 
-Create 4 Lambda functions, all using:
-- **Runtime**: Python 3.12
-- **Role**: `mcp-tool-lambda-role`
-- **Timeout**: 30 seconds
+Create 4 Lambda functions (Python 3.12, role: `mcp-tool-lambda-role`):
 
 | Lambda Name | Code Source |
 |-------------|-----------|
@@ -128,175 +111,142 @@ Create 4 Lambda functions, all using:
 | `mcp-tool-time` | `tool-lambdas/datetime_tools/lambda_function.py` |
 | `mcp-tool-utility` | `tool-lambdas/utility_tools/lambda_function.py` |
 
-For each: Create Function → Paste code → **Deploy**
-
 ---
 
 ## Step 4: Test Tool Lambdas
 
-Test each with these events in the Lambda console **Test** tab:
-
-**Describe test (all):**
-```json
-{"action": "__describe__"}
-```
-
-**Call test examples:**
-```json
-{"action": "__call__", "tool": "add", "arguments": {"a": 5, "b": 3}}
-{"action": "__call__", "tool": "uppercase", "arguments": {"text": "hello"}}
-{"action": "__call__", "tool": "current_time", "arguments": {}}
-{"action": "__call__", "tool": "is_palindrome", "arguments": {"text": "racecar"}}
-```
-
-✅ All must pass before proceeding.
+Test each with `{"action": "__describe__"}` and one `__call__` per Lambda.
 
 ---
 
-## Step 5: Push MCP Server Image to ECR
+## Step 5: Set Up EC2 Instance
 
-### 5A: Create ECR Repository
+### 5A: Install Docker (if not already installed)
 
-1. **ECR Console** → **Create repository**
-2. **Name**: `mcp-server`
-3. **Visibility**: Private
-4. Click **Create**
-
-### 5B: Build and Push Docker Image
-
-On your local machine (requires Docker and AWS CLI):
+SSH into your EC2 instance:
 
 ```bash
-# Set your AWS account ID and region
-export AWS_ACCOUNT_ID=123456789012
-export AWS_REGION=us-east-1
+ssh ec2-user@10.132.191.157
+```
 
-# Authenticate Docker with ECR
-aws ecr get-login-password --region $AWS_REGION | \
-  docker login --username AWS --password-stdin \
-  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+Install Docker:
 
-# Build the image (run from ecs-based-poc/mcp-server/)
-cd mcp-server
+```bash
+# Amazon Linux 2
+sudo yum update -y
+sudo yum install -y docker
+sudo systemctl start docker
+sudo systemctl enable docker
+sudo usermod -aG docker ec2-user
+
+# Log out and back in for group change to take effect
+exit
+ssh ec2-user@10.132.191.157
+```
+
+Verify:
+
+```bash
+docker --version
+```
+
+### 5B: Verify IAM Role
+
+The EC2 instance must have the `mcp-server-ec2-role` attached (from Step 2B).
+
+```bash
+# Check that the instance can list Lambda functions
+aws lambda list-functions --region us-east-1 --query 'Functions[?starts_with(FunctionName, `mcp-tool-`)].FunctionName'
+```
+
+✅ Should list your `mcp-tool-*` functions.
+
+---
+
+## Step 6: Build & Run MCP Server on EC2
+
+### 6A: Copy Source Code to EC2
+
+From your local machine:
+
+```bash
+# Copy the mcp-server folder to EC2
+scp -r mcp-server/ ec2-user@10.132.191.157:~/mcp-server/
+```
+
+Or clone/download the code directly on EC2.
+
+### 6B: Build the Docker Image
+
+On the EC2 instance:
+
+```bash
+cd ~/mcp-server
 docker build -t mcp-server .
+```
 
-# Tag for ECR
-docker tag mcp-server:latest \
-  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/mcp-server:latest
+### 6C: Run the Container
 
-# Push to ECR
-docker push \
-  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/mcp-server:latest
+```bash
+docker run -d \
+  --name mcp-server \
+  --restart unless-stopped \
+  -p 8085:8085 \
+  -e AWS_REGION=us-east-1 \
+  -e TOOL_PREFIX=mcp-tool- \
+  -e CACHE_TTL=300 \
+  -e LOG_LEVEL=INFO \
+  mcp-server
+```
+
+**Flags explained:**
+| Flag | Purpose |
+|------|---------|
+| `-d` | Run in background (detached) |
+| `--restart unless-stopped` | Auto-restart on crash or reboot |
+| `-p 8085:8085` | Map EC2 port 8085 → container port 8085 |
+| `-e AWS_REGION=us-east-1` | Set your region |
+
+### 6D: Check Container Status
+
+```bash
+# Is it running?
+docker ps
+
+# View logs (follow mode)
+docker logs -f mcp-server
+
+# Check health
+curl http://localhost:8085/health
+```
+
+You should see startup logs like:
+
+```
+============================================================
+  MCP Server 'aws-mcp-server' v1.0.0 starting
+  Endpoint: http://0.0.0.0:8085/mcp
+  Health:   http://0.0.0.0:8085/health
+============================================================
+Running initial tool discovery...
+Lambda scan: found 4 functions matching 'mcp-tool-'
+  • add                  ← mcp-tool-math              │ Add two numbers together...
+  • multiply             ← mcp-tool-math              │ Multiply two numbers...
+  ...
+DISCOVERY COMPLETE: 14 tools from 4 Lambdas
+============================================================
+  Server ready to accept connections
+============================================================
 ```
 
 ---
 
-## Step 6: Create ECS Cluster + Service + ALB
-
-### 6A: Create ECS Cluster
-
-1. **ECS Console** → **Clusters** → **Create cluster**
-2. **Cluster name**: `mcp-cluster`
-3. **Infrastructure**: AWS Fargate (serverless)
-4. Click **Create**
-
-### 6B: Create Task Definition
-
-1. **ECS Console** → **Task definitions** → **Create new task definition** → **JSON**
-
-```json
-{
-    "family": "mcp-server",
-    "networkMode": "awsvpc",
-    "requiresCompatibilities": ["FARGATE"],
-    "cpu": "512",
-    "memory": "1024",
-    "taskRoleArn": "arn:aws:iam::YOUR_ACCOUNT:role/mcp-server-ecs-task-role",
-    "executionRoleArn": "arn:aws:iam::YOUR_ACCOUNT:role/ecsTaskExecutionRole",
-    "containerDefinitions": [
-        {
-            "name": "mcp-server",
-            "image": "YOUR_ACCOUNT.dkr.ecr.YOUR_REGION.amazonaws.com/mcp-server:latest",
-            "portMappings": [
-                {"containerPort": 8000, "protocol": "tcp"}
-            ],
-            "environment": [
-                {"name": "AWS_REGION", "value": "us-east-1"},
-                {"name": "TOOL_PREFIX", "value": "mcp-tool-"},
-                {"name": "CACHE_TTL", "value": "300"},
-                {"name": "LOG_LEVEL", "value": "INFO"}
-            ],
-            "logConfiguration": {
-                "logDriver": "awslogs",
-                "options": {
-                    "awslogs-group": "/ecs/mcp-server",
-                    "awslogs-region": "us-east-1",
-                    "awslogs-stream-prefix": "mcp",
-                    "awslogs-create-group": "true"
-                }
-            },
-            "healthCheck": {
-                "command": ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"],
-                "interval": 30,
-                "timeout": 5,
-                "retries": 3,
-                "startPeriod": 60
-            }
-        }
-    ]
-}
-```
-
-> Replace `YOUR_ACCOUNT` and `YOUR_REGION` with your values.
-
-### 6C: Create Application Load Balancer
-
-1. **EC2 Console** → **Load Balancers** → **Create** → **Application Load Balancer**
-2. **Name**: `mcp-server-alb`
-3. **Scheme**: Internal (if Client Lambda is in same VPC) or Internet-facing (for testing)
-4. **Listeners**: HTTP Port 80
-5. **VPC**: Select your VPC and at least 2 subnets
-6. **Security group**: `mcp-server-sg`
-
-**Create Target Group:**
-1. **Target type**: IP addresses
-2. **Name**: `mcp-server-tg`
-3. **Port**: 8000
-4. **Protocol**: HTTP
-5. **Health check path**: `/health`
-6. **Health check interval**: 30s
-7. Register targets later (ECS will register containers)
-
-**Set ALB listener** to forward to `mcp-server-tg`.
-
-### 6D: Create ECS Service
-
-1. **ECS Console** → **mcp-cluster** → **Create Service**
-2. **Launch type**: FARGATE
-3. **Task definition**: `mcp-server` (latest)
-4. **Service name**: `mcp-server-service`
-5. **Desired tasks**: 1 (increase for HA)
-6. **Networking**: Select your VPC, subnets, `mcp-server-sg`
-7. **Load balancing**: 
-   - Application Load Balancer → `mcp-server-alb`
-   - Container: `mcp-server:8000`
-   - Target group: `mcp-server-tg`
-8. Click **Create Service**
-
-Wait for the service to reach **RUNNING** status.
-
----
-
-## Step 7: Verify MCP Server Health
-
-### Get ALB DNS
-
-Go to **EC2** → **Load Balancers** → `mcp-server-alb` → copy DNS name.
+## Step 7: Verify MCP Server
 
 ### Health Check
 
-```
-curl http://<ALB-DNS>/health
+```bash
+curl http://10.132.191.157:8085/health
 ```
 
 Expected:
@@ -304,21 +254,30 @@ Expected:
 {
     "status": "healthy",
     "server": "aws-mcp-server",
-    "version": "1.0.0",
     "tools_discovered": 14,
     "tool_names": ["add", "multiply", "subtract", "divide", "uppercase", ...]
 }
 ```
 
-### Test tools/list via MCP Protocol
+### Test tools/list
 
 ```bash
-curl -X POST http://<ALB-DNS>/mcp \
+curl -X POST http://10.132.191.157:8085/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
 ✅ Should return all 14 tools.
+
+### Test tools/call
+
+```bash
+curl -X POST http://10.132.191.157:8085/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add","arguments":{"a":5,"b":3}}}'
+```
+
+✅ Should return `{"result": 8}`.
 
 ---
 
@@ -333,71 +292,64 @@ curl -X POST http://<ALB-DNS>/mcp \
 
 ### Configure:
 
-- **Timeout**: 120 seconds
-- **Memory**: 256 MB
-- **VPC**: Same VPC as the ECS service (if ALB is internal)
+| Setting | Value |
+|---------|-------|
+| **Timeout** | 120 seconds |
+| **Memory** | 256 MB |
+| **VPC** | Same VPC as the EC2 instance (so it can reach `10.132.191.157`) |
+| **Subnets** | Private subnets that can reach the EC2 |
+| **Security Group** | Allow outbound to `10.132.191.157:8085` |
 
 **Environment Variables:**
 
 | Key | Value |
 |-----|-------|
 | `AWS_REGION` | `us-east-1` |
-| `MCP_SERVER_URL` | `http://<ALB-DNS>/mcp` |
+| `MCP_SERVER_URL` | `http://10.132.191.157:8085/mcp` |
 | `BEDROCK_MODEL_ID` | `anthropic.claude-3-sonnet-20240229-v1:0` |
 
-> **Important**: Replace `<ALB-DNS>` with your actual ALB DNS name!
+> **Important**: The client Lambda MUST be in the same VPC as the EC2 instance (or have network connectivity to `10.132.191.157`).
 
 ---
 
 ## Step 9: Test End-to-End
 
-### Test 1: List Tools
+See [03-testing-guide.md](./03-testing-guide.md) for the full test suite.
+
+Quick smoke tests on the `mcp-client` Lambda:
+
 ```json
 {"action": "list_tools"}
 ```
-✅ Should return 14 tools
-
-### Test 2: Math Question
 ```json
 {"question": "What is 15 multiplied by 27?"}
 ```
-✅ Should use `multiply` tool, answer "405"
-
-### Test 3: String Question
 ```json
-{"question": "Reverse the word Lambda"}
+{"question": "Convert 100 Celsius to Fahrenheit"}
 ```
-✅ Should use `reverse` tool
 
-### Test 4: Time Question
-```json
-{"question": "What is today's date?"}
-```
-✅ Should use `current_time` tool
+---
 
-### Test 5: Utility Question
-```json
-{"question": "Convert 100 degrees Celsius to Fahrenheit"}
-```
-✅ Should use `convert_temperature` tool, answer "212°F"
+## Useful Docker Commands
 
-### Test 6: No Tool Needed
-```json
-{"question": "What is the capital of France?"}
+```bash
+# View live logs
+docker logs -f mcp-server
+
+# Restart container
+docker restart mcp-server
+
+# Stop and remove
+docker stop mcp-server && docker rm mcp-server
+
+# Rebuild and re-run (after code changes)
+docker build -t mcp-server . && docker run -d --name mcp-server --restart unless-stopped -p 8085:8085 -e AWS_REGION=us-east-1 -e TOOL_PREFIX=mcp-tool- -e CACHE_TTL=300 mcp-server
 ```
-✅ Should answer directly without using tools
 
 ---
 
 ## Resource Cleanup
 
-1. **ECS**: Delete service → delete cluster
-2. **ECR**: Delete mcp-server repository
-3. **ALB**: Delete load balancer → delete target group
-4. **Lambda**: Delete all `mcp-tool-*` and `mcp-client`
-5. **IAM**: Delete roles and inline policies
-6. **CloudWatch**: Delete log groups `/ecs/mcp-server` and `/aws/lambda/mcp-*`
-
----
-
-**Next →** [03-testing-guide.md](./03-testing-guide.md) — Complete test suite
+1. **EC2**: `docker stop mcp-server && docker rm mcp-server && docker rmi mcp-server`
+2. **Lambda**: Delete `mcp-tool-math`, `mcp-tool-string`, `mcp-tool-time`, `mcp-tool-utility`, `mcp-client`
+3. **IAM**: Delete roles `mcp-server-ec2-role`, `mcp-tool-lambda-role`, `mcp-client-lambda-role`

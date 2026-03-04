@@ -39,13 +39,13 @@ USER appuser
 # ─── Health Check ─────────────────────────────────────────────────
 # Docker/ECS can use this to verify the container is healthy.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:8085/health || exit 1
 
 # ─── Expose Port ──────────────────────────────────────────────────
-EXPOSE 8000
+EXPOSE 8085
 
 # ─── Run the Server ───────────────────────────────────────────────
 # Use uvicorn directly for production.
 # --host 0.0.0.0 : Listen on all interfaces (required in Docker)
-# --port 8000    : Must match EXPOSE and ALB target group
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --port 8085    : Must match EXPOSE and security group
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8085"]
