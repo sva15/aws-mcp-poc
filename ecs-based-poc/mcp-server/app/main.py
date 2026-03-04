@@ -122,15 +122,23 @@ async def lifespan(app: Starlette):
 # ─── Assemble the ASGI Application ─────────────────────────────
 # Starlette lets us combine the MCP endpoint and health check
 # into one application running on one port.
+#
+# IMPORTANT: streamable_http_app() already creates an internal
+# route at "/mcp". If we Mount("/mcp", ...), Starlette strips
+# the "/mcp" prefix → sub-app sees "/" → no match → 307 redirect.
+#
+# Fix: Mount at "/" so the sub-app's internal "/mcp" route works.
+# Requests flow:  POST /mcp → Starlette "/" mount → sub-app "/mcp" → OK
 
 app = Starlette(
     routes=[
-        # MCP Streamable HTTP endpoint
-        # Clients connect to: http://<host>:8000/mcp
-        Mount("/mcp", app=mcp_app.streamable_http_app()),
-
-        # ALB health check endpoint
+        # Health check endpoint (must be BEFORE the catch-all Mount)
         Route("/health", health_check, methods=["GET"]),
+
+        # MCP Streamable HTTP endpoint
+        # Clients connect to: http://<host>:8085/mcp
+        # The streamable_http_app() handles /mcp internally
+        Mount("/", app=mcp_app.streamable_http_app()),
     ],
     lifespan=lifespan,
 )
