@@ -2,20 +2,11 @@
 Math Tools Lambda Function.
 Provides: add, multiply, subtract, divide
 
-Follows the __describe__ / __call__ protocol:
-  - "__describe__" → Return tool definitions (names, descriptions, schemas)
-  - "__call__"     → Execute a specific tool with given arguments
+Deployed behind ALB at: /tools/math
+Supports both ALB events (HTTP) and direct invocation.
 
-Each tool's description is written to help Bedrock understand
-WHEN to use it (not just what it does). This is critical because
-Bedrock reads these descriptions to decide which tool matches
-the user's question.
-
-Best Practices followed:
-  - Input validation before processing
-  - Clear error messages (Bedrock can use these to retry or explain)
-  - Structured descriptions with usage hints
-  - Complete JSON Schema definitions with types and descriptions
+ALB event: {"httpMethod":"POST", "body":"{\"action\":\"__call__\",...}", ...}
+Direct:    {"action":"__call__", "tool":"add", "arguments":{"a":5,"b":3}}
 """
 
 import json
@@ -25,17 +16,12 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 
-# ─── Tool Definitions ────────────────────────────────────────────
-# These are returned by __describe__. The MCP Server registers them
-# as MCP tools. The Client Lambda converts them to Bedrock format.
+# ─── Tool Implementations ────────────────────────────────────────
 
 TOOL_DEFINITIONS = [
     {
         "name": "add",
-        "description": (
-            "Add two numbers together and return the sum. "
-            "Use this when someone asks to add, sum, combine, or total numbers."
-        ),
+        "description": "Add two numbers together and return the sum. Use this when someone asks to add, sum, combine, or total numbers.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -47,46 +33,36 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "multiply",
-        "description": (
-            "Multiply two numbers together and return the product. "
-            "Use this when someone asks to multiply, find the product, "
-            "or calculate 'X times Y'."
-        ),
+        "description": "Multiply two numbers together and return the product. Use this when someone asks to multiply, find the product, or calculate 'X times Y'.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "a": {"type": "number", "description": "First number (multiplicand)"},
-                "b": {"type": "number", "description": "Second number (multiplier)"},
+                "a": {"type": "number", "description": "First number"},
+                "b": {"type": "number", "description": "Second number"},
             },
             "required": ["a", "b"],
         },
     },
     {
         "name": "subtract",
-        "description": (
-            "Subtract the second number from the first and return the difference. "
-            "Use this when someone asks to subtract, find the difference, or 'minus'."
-        ),
+        "description": "Subtract the second number from the first. Use this when someone asks to subtract or find the difference.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "a": {"type": "number", "description": "Number to subtract from (minuend)"},
-                "b": {"type": "number", "description": "Number to subtract (subtrahend)"},
+                "a": {"type": "number", "description": "Number to subtract from"},
+                "b": {"type": "number", "description": "Number to subtract"},
             },
             "required": ["a", "b"],
         },
     },
     {
         "name": "divide",
-        "description": (
-            "Divide the first number by the second and return the quotient. "
-            "Use this when someone asks to divide, find the quotient, or 'X divided by Y'."
-        ),
+        "description": "Divide the first number by the second. Use this when someone asks to divide or find the quotient.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "a": {"type": "number", "description": "Dividend (number being divided)"},
-                "b": {"type": "number", "description": "Divisor (number to divide by, cannot be zero)"},
+                "a": {"type": "number", "description": "Dividend"},
+                "b": {"type": "number", "description": "Divisor (cannot be zero)"},
             },
             "required": ["a", "b"],
         },
@@ -94,37 +70,26 @@ TOOL_DEFINITIONS = [
 ]
 
 
-# ─── Tool Implementations ────────────────────────────────────────
-
-def _execute_add(a: float, b: float) -> dict:
+def _execute_add(a, b):
     result = a + b
-    logger.info(f"add({a}, {b}) = {result}")
     return {"result": result, "expression": f"{a} + {b} = {result}"}
 
-
-def _execute_multiply(a: float, b: float) -> dict:
+def _execute_multiply(a, b):
     result = a * b
-    logger.info(f"multiply({a}, {b}) = {result}")
     return {"result": result, "expression": f"{a} × {b} = {result}"}
 
-
-def _execute_subtract(a: float, b: float) -> dict:
+def _execute_subtract(a, b):
     result = a - b
-    logger.info(f"subtract({a}, {b}) = {result}")
     return {"result": result, "expression": f"{a} - {b} = {result}"}
 
-
-def _execute_divide(a: float, b: float) -> dict:
+def _execute_divide(a, b):
     if b == 0:
-        logger.warning(f"divide({a}, {b}) → Division by zero!")
-        return {"error": "Cannot divide by zero. The divisor must be a non-zero number."}
+        return {"error": "Cannot divide by zero."}
     result = a / b
-    logger.info(f"divide({a}, {b}) = {result}")
     return {"result": result, "expression": f"{a} ÷ {b} = {result}"}
 
 
-# Map tool names to their implementation functions
-_TOOL_HANDLERS = {
+_HANDLERS = {
     "add": _execute_add,
     "multiply": _execute_multiply,
     "subtract": _execute_subtract,
@@ -132,55 +97,58 @@ _TOOL_HANDLERS = {
 }
 
 
+# ─── ALB Response Helper ─────────────────────────────────────────
+
+def _alb_response(status_code, body):
+    return {
+        "statusCode": status_code,
+        "statusDescription": f"{status_code} OK" if status_code == 200 else f"{status_code} Error",
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps(body),
+        "isBase64Encoded": False,
+    }
+
+
 # ─── Lambda Handler ──────────────────────────────────────────────
 
 def lambda_handler(event, context):
-    """
-    Lambda entry point. Routes to __describe__ or __call__.
+    """Handles both ALB events and direct invocations."""
+    is_alb = "httpMethod" in event
 
-    __describe__ example:
-        Input:  {"action": "__describe__"}
-        Output: {"tools": [{"name": "add", "description": "...", "input_schema": {...}}, ...]}
+    if is_alb:
+        try:
+            body = json.loads(event.get("body", "{}") or "{}")
+        except json.JSONDecodeError:
+            return _alb_response(400, {"error": "Invalid JSON"})
+    else:
+        body = event
 
-    __call__ example:
-        Input:  {"action": "__call__", "tool": "add", "arguments": {"a": 5, "b": 3}}
-        Output: {"result": 8, "expression": "5 + 3 = 8"}
-    """
-    action = event.get("action", "")
-    logger.info(f"[mcp-tool-math] Received action: '{action}'")
+    action = body.get("action", "")
+    logger.info(f"[mcp-tool-math] action='{action}' source={'ALB' if is_alb else 'Direct'}")
 
     if action == "__describe__":
-        logger.info(f"[mcp-tool-math] Returning {len(TOOL_DEFINITIONS)} tool definitions")
-        return {"tools": TOOL_DEFINITIONS}
+        result = {"tools": TOOL_DEFINITIONS}
 
     elif action == "__call__":
-        tool_name = event.get("tool", "")
-        arguments = event.get("arguments", {})
+        tool_name = body.get("tool", "")
+        arguments = body.get("arguments", {})
+        handler = _HANDLERS.get(tool_name)
 
-        logger.info(f"[mcp-tool-math] Calling tool '{tool_name}' with args: {json.dumps(arguments)}")
-
-        handler = _TOOL_HANDLERS.get(tool_name)
         if not handler:
-            error_msg = f"Unknown tool: '{tool_name}'. Available: {list(_TOOL_HANDLERS.keys())}"
-            logger.error(f"[mcp-tool-math] {error_msg}")
-            return {"error": error_msg}
+            result = {"error": f"Unknown tool: '{tool_name}'"}
+        else:
+            a = arguments.get("a")
+            b = arguments.get("b")
+            if a is None or b is None:
+                result = {"error": "Parameters 'a' and 'b' are required."}
+            else:
+                try:
+                    result = handler(float(a), float(b))
+                except (TypeError, ValueError):
+                    result = {"error": f"Invalid numbers: a={a}, b={b}"}
 
-        # Extract and validate parameters
-        a = arguments.get("a")
-        b = arguments.get("b")
-
-        if a is None or b is None:
-            return {"error": f"Missing required parameters. 'a' and 'b' are both required."}
-
-        try:
-            a = float(a)
-            b = float(b)
-        except (TypeError, ValueError) as e:
-            return {"error": f"Invalid parameter types. 'a' and 'b' must be numbers. Got: a={a}, b={b}"}
-
-        result = handler(a, b)
-        logger.info(f"[mcp-tool-math] Result: {json.dumps(result)}")
-        return result
-
+        logger.info(f"[mcp-tool-math] {tool_name}({arguments}) → {json.dumps(result)[:200]}")
     else:
-        return {"error": f"Unknown action: '{action}'. Use '__describe__' or '__call__'."}
+        result = {"error": f"Unknown action: '{action}'. Use '__describe__' or '__call__'."}
+
+    return _alb_response(200, result) if is_alb else result

@@ -3,11 +3,9 @@ Utility Tools Lambda Function.
 Provides: convert_temperature, calculate_percentage, generate_password,
           count_characters, is_palindrome
 
-Demonstrates the "single Lambda, multiple tools" pattern.
-One Lambda function can host ANY number of tools — they all share
-the same runtime, dependencies, and IAM role.
-
-Follows the __describe__ / __call__ protocol.
+Deployed behind ALB at: /tools/utility
+Demonstrates a single Lambda hosting multiple tools.
+Supports both ALB events (HTTP) and direct invocation.
 """
 
 import json
@@ -22,226 +20,142 @@ logger.setLevel(logging.INFO)
 TOOL_DEFINITIONS = [
     {
         "name": "convert_temperature",
-        "description": (
-            "Convert temperature between Celsius and Fahrenheit. "
-            "Use this when someone asks to convert temperatures between units."
-        ),
+        "description": "Convert temperature between Celsius and Fahrenheit.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "value": {"type": "number", "description": "Temperature value to convert"},
-                "from_unit": {
-                    "type": "string",
-                    "description": "Unit to convert from: 'celsius' or 'fahrenheit'",
-                    "enum": ["celsius", "fahrenheit"],
-                },
+                "value": {"type": "number", "description": "Temperature value"},
+                "from_unit": {"type": "string", "description": "'celsius' or 'fahrenheit'", "enum": ["celsius", "fahrenheit"]},
             },
             "required": ["value", "from_unit"],
         },
     },
     {
         "name": "calculate_percentage",
-        "description": (
-            "Calculate percentages. Use 'what_percent' to find what percentage A is of B, "
-            "or 'percent_of' to find X% of a number."
-        ),
+        "description": "Calculate percentages. 'what_percent': A is what % of B. 'percent_of': X% of B.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "operation": {
-                    "type": "string",
-                    "description": "'what_percent' to find what % A is of B, or 'percent_of' to find X% of B",
-                    "enum": ["what_percent", "percent_of"],
-                },
-                "a": {"type": "number", "description": "First number (the part, or the percentage value)"},
-                "b": {"type": "number", "description": "Second number (the whole, or the base number)"},
+                "operation": {"type": "string", "enum": ["what_percent", "percent_of"]},
+                "a": {"type": "number", "description": "First number"},
+                "b": {"type": "number", "description": "Second number"},
             },
             "required": ["operation", "a", "b"],
         },
     },
     {
         "name": "generate_password",
-        "description": (
-            "Generate a random secure password of a specified length. "
-            "Use this when someone asks to create, generate, or make a password."
-        ),
+        "description": "Generate a random secure password.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "length": {
-                    "type": "integer",
-                    "description": "Length of the password (8-64 characters)",
-                },
-                "include_special": {
-                    "type": "boolean",
-                    "description": "Whether to include special characters (!@#$%^&*). Default: true",
-                },
+                "length": {"type": "integer", "description": "Password length (8-64)"},
+                "include_special": {"type": "boolean", "description": "Include special chars"},
             },
             "required": ["length"],
         },
     },
     {
         "name": "count_characters",
-        "description": (
-            "Count the number of characters in a text string. "
-            "Returns counts with and without spaces, letters, and digits. "
-            "Use this when someone asks how many characters or letters are in text."
-        ),
+        "description": "Count characters, letters, and digits in text.",
         "input_schema": {
             "type": "object",
-            "properties": {
-                "text": {"type": "string", "description": "Text to count characters in"},
-            },
+            "properties": {"text": {"type": "string", "description": "Text to analyze"}},
             "required": ["text"],
         },
     },
     {
         "name": "is_palindrome",
-        "description": (
-            "Check if a word or phrase is a palindrome (reads the same forwards and backwards). "
-            "Ignores spaces, punctuation, and case. "
-            "Use this when someone asks if something is a palindrome."
-        ),
+        "description": "Check if text is a palindrome (reads same forwards and backwards).",
         "input_schema": {
             "type": "object",
-            "properties": {
-                "text": {"type": "string", "description": "Text to check for palindrome"},
-            },
+            "properties": {"text": {"type": "string", "description": "Text to check"}},
             "required": ["text"],
         },
     },
 ]
 
 
-# ─── Tool Implementations ────────────────────────────────────────
-
-def _convert_temperature(value: float, from_unit: str) -> dict:
-    from_unit = from_unit.lower()
-    if from_unit == "celsius":
-        converted = (value * 9 / 5) + 32
-        return {
-            "result": {
-                "input": f"{value}°C",
-                "output": f"{round(converted, 2)}°F",
-                "value": round(converted, 2),
-                "formula": f"({value} × 9/5) + 32 = {round(converted, 2)}",
-            }
-        }
-    elif from_unit == "fahrenheit":
-        converted = (value - 32) * 5 / 9
-        return {
-            "result": {
-                "input": f"{value}°F",
-                "output": f"{round(converted, 2)}°C",
-                "value": round(converted, 2),
-                "formula": f"({value} - 32) × 5/9 = {round(converted, 2)}",
-            }
-        }
-    else:
-        return {"error": f"Unknown unit: '{from_unit}'. Use 'celsius' or 'fahrenheit'."}
-
-
-def _calculate_percentage(operation: str, a: float, b: float) -> dict:
-    if operation == "what_percent":
-        if b == 0:
-            return {"error": "Cannot calculate percentage of zero."}
-        pct = (a / b) * 100
-        return {"result": {"percentage": round(pct, 2), "description": f"{a} is {round(pct, 2)}% of {b}"}}
-    elif operation == "percent_of":
-        val = (a / 100) * b
-        return {"result": {"value": round(val, 2), "description": f"{a}% of {b} is {round(val, 2)}"}}
-    else:
-        return {"error": f"Unknown operation: '{operation}'. Use 'what_percent' or 'percent_of'."}
-
-
-def _generate_password(length: int, include_special: bool) -> dict:
-    length = min(max(length, 8), 64)  # Clamp to 8-64
-    chars = string.ascii_letters + string.digits
-    if include_special:
-        chars += "!@#$%^&*()_+-="
-    password = "".join(random.choices(chars, k=length))
-    return {"result": {"password": password, "length": length, "includes_special": include_special}}
-
-
-def _count_characters(text: str) -> dict:
+def _alb_response(status_code, body):
     return {
-        "result": {
-            "with_spaces": len(text),
-            "without_spaces": len(text.replace(" ", "")),
-            "letters": sum(1 for c in text if c.isalpha()),
-            "digits": sum(1 for c in text if c.isdigit()),
-            "text": text,
-        }
+        "statusCode": status_code,
+        "statusDescription": f"{status_code} OK" if status_code == 200 else f"{status_code} Error",
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps(body),
+        "isBase64Encoded": False,
     }
 
-
-def _is_palindrome(text: str) -> dict:
-    cleaned = "".join(c.lower() for c in text if c.isalnum())
-    is_pal = cleaned == cleaned[::-1]
-    return {
-        "result": {
-            "is_palindrome": is_pal,
-            "original": text,
-            "cleaned": cleaned,
-            "reversed": cleaned[::-1],
-        }
-    }
-
-
-# ─── Lambda Handler ──────────────────────────────────────────────
 
 def lambda_handler(event, context):
-    action = event.get("action", "")
-    logger.info(f"[mcp-tool-utility] Received action: '{action}'")
+    is_alb = "httpMethod" in event
+
+    if is_alb:
+        try:
+            body = json.loads(event.get("body", "{}") or "{}")
+        except json.JSONDecodeError:
+            return _alb_response(400, {"error": "Invalid JSON"})
+    else:
+        body = event
+
+    action = body.get("action", "")
+    logger.info(f"[mcp-tool-utility] action='{action}' source={'ALB' if is_alb else 'Direct'}")
 
     if action == "__describe__":
-        logger.info(f"[mcp-tool-utility] Returning {len(TOOL_DEFINITIONS)} tool definitions")
-        return {"tools": TOOL_DEFINITIONS}
+        result = {"tools": TOOL_DEFINITIONS}
 
     elif action == "__call__":
-        tool_name = event.get("tool", "")
-        arguments = event.get("arguments", {})
-
-        logger.info(f"[mcp-tool-utility] Calling tool '{tool_name}' with args: {json.dumps(arguments)}")
+        tool_name = body.get("tool", "")
+        arguments = body.get("arguments", {})
 
         if tool_name == "convert_temperature":
-            value = arguments.get("value")
-            from_unit = arguments.get("from_unit", "celsius")
-            if value is None:
-                return {"error": "Missing required parameter 'value'."}
-            result = _convert_temperature(float(value), from_unit)
+            value = float(arguments.get("value", 0))
+            from_unit = arguments.get("from_unit", "celsius").lower()
+            if from_unit == "celsius":
+                converted = (value * 9 / 5) + 32
+                result = {"result": {"input": f"{value}°C", "output": f"{round(converted, 2)}°F", "value": round(converted, 2)}}
+            elif from_unit == "fahrenheit":
+                converted = (value - 32) * 5 / 9
+                result = {"result": {"input": f"{value}°F", "output": f"{round(converted, 2)}°C", "value": round(converted, 2)}}
+            else:
+                result = {"error": f"Unknown unit: '{from_unit}'. Use 'celsius' or 'fahrenheit'."}
 
         elif tool_name == "calculate_percentage":
-            operation = arguments.get("operation", "")
-            a = arguments.get("a")
-            b = arguments.get("b")
-            if a is None or b is None:
-                return {"error": "Missing required parameters 'a' and 'b'."}
-            result = _calculate_percentage(operation, float(a), float(b))
+            op = arguments.get("operation", "")
+            a = float(arguments.get("a", 0))
+            b = float(arguments.get("b", 0))
+            if op == "what_percent":
+                pct = (a / b) * 100 if b != 0 else 0
+                result = {"result": {"percentage": round(pct, 2), "description": f"{a} is {round(pct, 2)}% of {b}"}}
+            elif op == "percent_of":
+                val = (a / 100) * b
+                result = {"result": {"value": round(val, 2), "description": f"{a}% of {b} is {round(val, 2)}"}}
+            else:
+                result = {"error": f"Unknown operation: '{op}'."}
 
         elif tool_name == "generate_password":
-            length = arguments.get("length", 12)
+            length = min(max(int(arguments.get("length", 12)), 8), 64)
             include_special = arguments.get("include_special", True)
-            result = _generate_password(int(length), bool(include_special))
+            chars = string.ascii_letters + string.digits
+            if include_special:
+                chars += "!@#$%^&*()_+-="
+            password = "".join(random.choices(chars, k=length))
+            result = {"result": {"password": password, "length": length}}
 
         elif tool_name == "count_characters":
-            text = arguments.get("text")
-            if text is None:
-                return {"error": "Missing required parameter 'text'."}
-            result = _count_characters(str(text))
+            text = str(arguments.get("text", ""))
+            result = {"result": {"with_spaces": len(text), "without_spaces": len(text.replace(" ", "")), "letters": sum(1 for c in text if c.isalpha()), "digits": sum(1 for c in text if c.isdigit())}}
 
         elif tool_name == "is_palindrome":
-            text = arguments.get("text")
-            if text is None:
-                return {"error": "Missing required parameter 'text'."}
-            result = _is_palindrome(str(text))
+            text = str(arguments.get("text", ""))
+            cleaned = "".join(c.lower() for c in text if c.isalnum())
+            is_pal = cleaned == cleaned[::-1]
+            result = {"result": {"is_palindrome": is_pal, "original": text, "cleaned": cleaned}}
 
         else:
-            available = [t["name"] for t in TOOL_DEFINITIONS]
-            return {"error": f"Unknown tool: '{tool_name}'. Available: {available}"}
+            result = {"error": f"Unknown tool: '{tool_name}'"}
 
-        logger.info(f"[mcp-tool-utility] Result: {json.dumps(result)[:200]}")
-        return result
-
+        logger.info(f"[mcp-tool-utility] {tool_name} → {json.dumps(result)[:200]}")
     else:
-        return {"error": f"Unknown action: '{action}'. Use '__describe__' or '__call__'."}
+        result = {"error": f"Unknown action: '{action}'."}
+
+    return _alb_response(200, result) if is_alb else result

@@ -2,7 +2,8 @@
 DateTime Tools Lambda Function.
 Provides: current_time, date_diff
 
-Follows the __describe__ / __call__ protocol.
+Deployed behind ALB at: /tools/time
+Supports both ALB events (HTTP) and direct invocation.
 """
 
 import json
@@ -16,35 +17,17 @@ logger.setLevel(logging.INFO)
 TOOL_DEFINITIONS = [
     {
         "name": "current_time",
-        "description": (
-            "Get the current date and time in UTC. "
-            "Use this when someone asks what time it is, what today's date is, "
-            "or wants the current date and time."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
+        "description": "Get the current date and time in UTC. Use when someone asks what time or date it is.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "date_diff",
-        "description": (
-            "Calculate the number of days between two dates. "
-            "Use this when someone asks how many days are between two dates, "
-            "how long until a date, or the duration between events."
-        ),
+        "description": "Calculate the number of days between two dates. Use when someone asks how many days between dates.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "date1": {
-                    "type": "string",
-                    "description": "First date in YYYY-MM-DD format (e.g., 2026-01-15)",
-                },
-                "date2": {
-                    "type": "string",
-                    "description": "Second date in YYYY-MM-DD format (e.g., 2026-12-31)",
-                },
+                "date1": {"type": "string", "description": "First date (YYYY-MM-DD)"},
+                "date2": {"type": "string", "description": "Second date (YYYY-MM-DD)"},
             },
             "required": ["date1", "date2"],
         },
@@ -52,69 +35,66 @@ TOOL_DEFINITIONS = [
 ]
 
 
-def _execute_current_time() -> dict:
-    now = datetime.now(timezone.utc)
-    result = {
-        "result": {
-            "iso": now.isoformat(),
-            "date": now.strftime("%Y-%m-%d"),
-            "time": now.strftime("%H:%M:%S"),
-            "day_of_week": now.strftime("%A"),
-            "timezone": "UTC",
-        }
+def _alb_response(status_code, body):
+    return {
+        "statusCode": status_code,
+        "statusDescription": f"{status_code} OK" if status_code == 200 else f"{status_code} Error",
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps(body),
+        "isBase64Encoded": False,
     }
-    logger.info(f"current_time() = {now.isoformat()}")
-    return result
-
-
-def _execute_date_diff(date1_str: str, date2_str: str) -> dict:
-    try:
-        d1 = datetime.strptime(date1_str, "%Y-%m-%d")
-        d2 = datetime.strptime(date2_str, "%Y-%m-%d")
-    except ValueError as e:
-        return {"error": f"Invalid date format. Use YYYY-MM-DD. Error: {e}"}
-
-    diff_days = abs((d2 - d1).days)
-    result = {
-        "result": {
-            "days": diff_days,
-            "weeks": round(diff_days / 7, 1),
-            "months_approx": round(diff_days / 30.44, 1),
-            "date1": date1_str,
-            "date2": date2_str,
-        }
-    }
-    logger.info(f"date_diff('{date1_str}', '{date2_str}') = {diff_days} days")
-    return result
 
 
 def lambda_handler(event, context):
-    action = event.get("action", "")
-    logger.info(f"[mcp-tool-time] Received action: '{action}'")
+    is_alb = "httpMethod" in event
+
+    if is_alb:
+        try:
+            body = json.loads(event.get("body", "{}") or "{}")
+        except json.JSONDecodeError:
+            return _alb_response(400, {"error": "Invalid JSON"})
+    else:
+        body = event
+
+    action = body.get("action", "")
+    logger.info(f"[mcp-tool-time] action='{action}' source={'ALB' if is_alb else 'Direct'}")
 
     if action == "__describe__":
-        logger.info(f"[mcp-tool-time] Returning {len(TOOL_DEFINITIONS)} tool definitions")
-        return {"tools": TOOL_DEFINITIONS}
+        result = {"tools": TOOL_DEFINITIONS}
 
     elif action == "__call__":
-        tool_name = event.get("tool", "")
-        arguments = event.get("arguments", {})
-
-        logger.info(f"[mcp-tool-time] Calling tool '{tool_name}' with args: {json.dumps(arguments)}")
+        tool_name = body.get("tool", "")
+        arguments = body.get("arguments", {})
 
         if tool_name == "current_time":
-            result = _execute_current_time()
+            now = datetime.now(timezone.utc)
+            result = {
+                "result": {
+                    "iso": now.isoformat(),
+                    "date": now.strftime("%Y-%m-%d"),
+                    "time": now.strftime("%H:%M:%S"),
+                    "day_of_week": now.strftime("%A"),
+                    "timezone": "UTC",
+                }
+            }
         elif tool_name == "date_diff":
-            date1 = arguments.get("date1", "")
-            date2 = arguments.get("date2", "")
-            if not date1 or not date2:
-                return {"error": "Missing required parameters 'date1' and 'date2'."}
-            result = _execute_date_diff(date1, date2)
+            d1_str = arguments.get("date1", "")
+            d2_str = arguments.get("date2", "")
+            if not d1_str or not d2_str:
+                result = {"error": "Parameters 'date1' and 'date2' are required."}
+            else:
+                try:
+                    d1 = datetime.strptime(d1_str, "%Y-%m-%d")
+                    d2 = datetime.strptime(d2_str, "%Y-%m-%d")
+                    diff = abs((d2 - d1).days)
+                    result = {"result": {"days": diff, "weeks": round(diff / 7, 1), "date1": d1_str, "date2": d2_str}}
+                except ValueError as e:
+                    result = {"error": f"Invalid date format. Use YYYY-MM-DD. {e}"}
         else:
-            return {"error": f"Unknown tool: '{tool_name}'. Available: ['current_time', 'date_diff']"}
+            result = {"error": f"Unknown tool: '{tool_name}'"}
 
-        logger.info(f"[mcp-tool-time] Result: {json.dumps(result)[:200]}")
-        return result
-
+        logger.info(f"[mcp-tool-time] {tool_name} → {json.dumps(result)[:200]}")
     else:
-        return {"error": f"Unknown action: '{action}'. Use '__describe__' or '__call__'."}
+        result = {"error": f"Unknown action: '{action}'."}
+
+    return _alb_response(200, result) if is_alb else result
