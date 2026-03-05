@@ -58,7 +58,7 @@ Test each Lambda directly in the Lambda console **Test** tab.
 
 ## 2. MCP Server Tests
 
-Test via `curl` against the ALB URL.
+Test via `curl` against the EC2 instance. **Important**: The MCP SDK requires the `Accept: application/json` header.
 
 ### Test 17 — Health Check
 
@@ -72,6 +72,7 @@ curl http://10.132.191.157:8085/health
 ```bash
 curl -X POST http://10.132.191.157:8085/mcp \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 ✅ Returns 14 tools from all 4 tool Lambdas
@@ -81,6 +82,7 @@ curl -X POST http://10.132.191.157:8085/mcp \
 ```bash
 curl -X POST http://10.132.191.157:8085/mcp \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add","arguments":{"a":5,"b":3}}}'
 ```
 ✅ Returns `{"result":8}`
@@ -90,6 +92,7 @@ curl -X POST http://10.132.191.157:8085/mcp \
 ```bash
 curl -X POST http://10.132.191.157:8085/mcp \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"nonexistent","arguments":{}}}'
 ```
 ✅ Returns error "Unknown tool"
@@ -99,6 +102,7 @@ curl -X POST http://10.132.191.157:8085/mcp \
 ```bash
 curl -X POST http://10.132.191.157:8085/mcp \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"invalid/method"}'
 ```
 ✅ Returns JSON-RPC method not found error
@@ -190,6 +194,7 @@ Wait 5 minutes (cache TTL) or test via MCP Server:
 ```bash
 curl -X POST http://10.132.191.157:8085/mcp \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"force_refresh":true}}'
 ```
 ✅ Should now show **15 tools** (14 + greet)
